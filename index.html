@@ -2,17 +2,17 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>Random 1-to-1 Video Call</title>
+  <title>Random Video Chat</title>
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <style>
-    body { font-family:sans-serif; margin:20px; }
-    #videos { display:flex; gap:10px; margin-bottom:10px; }
-    video { width:48%; background:#000; border-radius:6px; }
-    button { padding:8px 12px; margin:4px; }
+    body { font-family: sans-serif; margin: 20px; text-align: center; }
+    #videos { display: flex; gap: 10px; margin-bottom: 10px; justify-content: center; }
+    video { width: 45%; background: #000; border-radius: 8px; }
+    button { padding: 8px 14px; margin: 5px; cursor: pointer; }
   </style>
 </head>
 <body>
-  <h1>Random Connect (no Room IDs)</h1>
+  <h1>Random 1-to-1 Video Chat</h1>
 
   <div id="videos">
     <video id="localVideo" autoplay playsinline muted></video>
@@ -20,9 +20,9 @@
   </div>
 
   <div>
-    <button id="startBtn">Start Camera</button>
-    <button id="connectBtn">Connect Randomly</button>
-    <button id="hangupBtn">Hang Up</button>
+    <button id="startBtn">🎥 Start Camera</button>
+    <button id="connectBtn">🔗 Connect Randomly</button>
+    <button id="hangupBtn">❌ Hang Up</button>
   </div>
 
   <p>Status: <span id="status">Idle</span></p>
@@ -30,11 +30,11 @@
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.2/firebase-app.js";
     import {
-      getDatabase, ref, push, set, get, child, onValue,
+      getDatabase, ref, push, set, get, onValue,
       onChildAdded, remove
     } from "https://www.gstatic.com/firebasejs/9.22.2/firebase-database.js";
 
-    // --- Your Firebase config ---
+    // 🔑 Firebase config (your project)
     const firebaseConfig = {
       apiKey: "AIzaSyCEwxcXt-jXv29ZIDzji3TgyXnxn1sSsNU",
       authDomain: "one2one-aba34.firebaseapp.com",
@@ -48,7 +48,7 @@
     const app = initializeApp(firebaseConfig);
     const db = getDatabase(app);
 
-    // --- UI ---
+    // UI elements
     const startBtn = document.getElementById("startBtn");
     const connectBtn = document.getElementById("connectBtn");
     const hangupBtn = document.getElementById("hangupBtn");
@@ -56,26 +56,50 @@
     const localVideo = document.getElementById("localVideo");
     const remoteVideo = document.getElementById("remoteVideo");
 
-    // --- State ---
+    // State
     let localStream = null;
     let pc = null;
     let roomKey = null;
     let role = null;
 
-    const servers = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
+    // STUN + TURN (Metered public demo — replace with your own in production!)
+    const servers = {
+      iceServers: [
+        { urls: "stun:stun.l.google.com:19302" },
+        {
+          urls: "turn:openrelay.metered.ca:80",
+          username: "openrelayproject",
+          credential: "openrelayproject"
+        },
+        {
+          urls: "turn:openrelay.metered.ca:443",
+          username: "openrelayproject",
+          credential: "openrelayproject"
+        },
+        {
+          urls: "turn:openrelay.metered.ca:443?transport=tcp",
+          username: "openrelayproject",
+          credential: "openrelayproject"
+        }
+      ]
+    };
 
     startBtn.onclick = startCamera;
     connectBtn.onclick = connectRandomly;
     hangupBtn.onclick = hangUp;
 
     async function startCamera() {
-      localStream = await navigator.mediaDevices.getUserMedia({ video:true, audio:true });
-      localVideo.srcObject = localStream;
-      statusEl.textContent = "Camera ready";
+      try {
+        localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        localVideo.srcObject = localStream;
+        statusEl.textContent = "Camera ready";
+      } catch (err) {
+        alert("Camera/Mic permission denied: " + err);
+      }
     }
 
     function createPeerConnection() {
-      pc = new RTCPeerConnection(servers);
+      const pc = new RTCPeerConnection(servers);
       localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
       pc.ontrack = e => { remoteVideo.srcObject = e.streams[0]; };
       return pc;
@@ -87,7 +111,6 @@
       const waitingRef = ref(db, "waiting");
       const snapshot = await get(waitingRef);
 
-      // Look for a waiting caller (offer exists, no answer yet)
       let foundKey = null, foundOffer = null;
       if (snapshot.exists()) {
         for (const [key, val] of Object.entries(snapshot.val())) {
@@ -100,10 +123,10 @@
       }
 
       if (foundKey) {
-        // --- Join as callee ---
+        // --- Callee ---
         role = "callee";
         roomKey = foundKey;
-        statusEl.textContent = "Found a partner, joining...";
+        statusEl.textContent = "Joining partner...";
 
         pc = createPeerConnection();
         await pc.setRemoteDescription(new RTCSessionDescription(foundOffer));
@@ -125,9 +148,9 @@
           }
         };
 
-        statusEl.textContent = "Connected (callee)";
+        statusEl.textContent = "Connected ✅ (callee)";
       } else {
-        // --- Become caller (create room) ---
+        // --- Caller ---
         role = "caller";
         pc = createPeerConnection();
 
@@ -137,11 +160,11 @@
         roomKey = push(waitingRef).key;
         await set(ref(db, `waiting/${roomKey}`), { offer: offer.toJSON() });
 
-        // Listen for answer
+        // Wait for answer
         onValue(ref(db, `waiting/${roomKey}/answer`), async snap => {
           if (snap.exists() && !pc.currentRemoteDescription) {
             await pc.setRemoteDescription(new RTCSessionDescription(snap.val()));
-            statusEl.textContent = "Connected (caller)";
+            statusEl.textContent = "Connected ✅ (caller)";
           }
         });
 
