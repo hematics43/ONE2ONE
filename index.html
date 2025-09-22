@@ -12,7 +12,7 @@
   </style>
 </head>
 <body>
-  <h1>Random 1-to-1 Video Call</h1>
+  <h1>Random Connect (no Room IDs)</h1>
 
   <div id="videos">
     <video id="localVideo" autoplay playsinline muted></video>
@@ -27,14 +27,14 @@
 
   <p>Status: <span id="status">Idle</span></p>
 
-  <!-- Firebase + WebRTC -->
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.2/firebase-app.js";
     import {
-      getDatabase, ref, push, set, get, child, onValue, onChildAdded, remove, update
+      getDatabase, ref, push, set, get, child, onValue,
+      onChildAdded, remove
     } from "https://www.gstatic.com/firebasejs/9.22.2/firebase-database.js";
 
-    // --- Your Firebase RTDB config ---
+    // --- Your Firebase config ---
     const firebaseConfig = {
       apiKey: "AIzaSyCEwxcXt-jXv29ZIDzji3TgyXnxn1sSsNU",
       authDomain: "one2one-aba34.firebaseapp.com",
@@ -53,11 +53,10 @@
     const connectBtn = document.getElementById("connectBtn");
     const hangupBtn = document.getElementById("hangupBtn");
     const statusEl = document.getElementById("status");
-
     const localVideo = document.getElementById("localVideo");
     const remoteVideo = document.getElementById("remoteVideo");
 
-    // --- Variables ---
+    // --- State ---
     let localStream = null;
     let pc = null;
     let roomKey = null;
@@ -77,12 +76,8 @@
 
     function createPeerConnection() {
       pc = new RTCPeerConnection(servers);
-      if (localStream) {
-        localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
-      }
-      pc.ontrack = e => {
-        remoteVideo.srcObject = e.streams[0];
-      };
+      localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+      pc.ontrack = e => { remoteVideo.srcObject = e.streams[0]; };
       return pc;
     }
 
@@ -92,22 +87,29 @@
       const waitingRef = ref(db, "waiting");
       const snapshot = await get(waitingRef);
 
+      // Look for a waiting caller (offer exists, no answer yet)
+      let foundKey = null, foundOffer = null;
       if (snapshot.exists()) {
-        // Someone is waiting → join them
-        const [firstKey, firstVal] = Object.entries(snapshot.val())[0];
-        roomKey = firstKey;
+        for (const [key, val] of Object.entries(snapshot.val())) {
+          if (val.offer && !val.answer) {
+            foundKey = key;
+            foundOffer = val.offer;
+            break;
+          }
+        }
+      }
+
+      if (foundKey) {
+        // --- Join as callee ---
         role = "callee";
+        roomKey = foundKey;
         statusEl.textContent = "Found a partner, joining...";
 
         pc = createPeerConnection();
-
-        const offer = firstVal.offer;
-        await pc.setRemoteDescription(new RTCSessionDescription(offer));
+        await pc.setRemoteDescription(new RTCSessionDescription(foundOffer));
 
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
-
-        // Save answer
         await set(ref(db, `waiting/${roomKey}/answer`), answer.toJSON());
 
         // Listen for caller ICE
@@ -123,11 +125,11 @@
           }
         };
 
-        statusEl.textContent = "Connected as callee";
+        statusEl.textContent = "Connected (callee)";
       } else {
-        // Nobody waiting → create room
-        pc = createPeerConnection();
+        // --- Become caller (create room) ---
         role = "caller";
+        pc = createPeerConnection();
 
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
@@ -139,7 +141,7 @@
         onValue(ref(db, `waiting/${roomKey}/answer`), async snap => {
           if (snap.exists() && !pc.currentRemoteDescription) {
             await pc.setRemoteDescription(new RTCSessionDescription(snap.val()));
-            statusEl.textContent = "Connected as caller";
+            statusEl.textContent = "Connected (caller)";
           }
         });
 
@@ -156,15 +158,12 @@
           }
         };
 
-        statusEl.textContent = "Waiting for a partner...";
+        statusEl.textContent = "Waiting for partner...";
       }
     }
 
     async function hangUp() {
-      if (pc) {
-        pc.close();
-        pc = null;
-      }
+      if (pc) { pc.close(); pc = null; }
       if (localStream) {
         localStream.getTracks().forEach(t => t.stop());
         localStream = null;
@@ -174,10 +173,10 @@
 
       if (roomKey) {
         await remove(ref(db, `waiting/${roomKey}`));
+        roomKey = null;
       }
 
       statusEl.textContent = "Call ended";
-      roomKey = null;
     }
   </script>
 </body>
