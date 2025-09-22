@@ -104,87 +104,90 @@
       pc.ontrack = e => { remoteVideo.srcObject = e.streams[0]; };
       return pc;
     }
+async function connectRandomly() {
+  if (!localStream) { alert("Start camera first"); return; }
 
-    async function connectRandomly() {
-      if (!localStream) { alert("Start camera first"); return; }
+  const waitingRef = ref(db, "waiting");
 
-      const waitingRef = ref(db, "waiting");
-      const snapshot = await get(waitingRef);
-
-      let foundKey = null, foundOffer = null;
-      if (snapshot.exists()) {
-        for (const [key, val] of Object.entries(snapshot.val())) {
-          if (val.offer && !val.answer) {
-            foundKey = key;
-            foundOffer = val.offer;
-            break;
-          }
-        }
-      }
-
-      if (foundKey) {
-        // --- Callee ---
-        role = "callee";
-        roomKey = foundKey;
-        statusEl.textContent = "Joining partner...";
-
-        pc = createPeerConnection();
-        await pc.setRemoteDescription(new RTCSessionDescription(foundOffer));
-
-        const answer = await pc.createAnswer();
-        await pc.setLocalDescription(answer);
-        await set(ref(db, `waiting/${roomKey}/answer`), answer.toJSON());
-
-        // Listen for caller ICE
-        onChildAdded(ref(db, `waiting/${roomKey}/candidates/caller`), async snap => {
-          await pc.addIceCandidate(new RTCIceCandidate(snap.val()));
-        });
-
-        // Send our ICE
-        pc.onicecandidate = e => {
-          if (e.candidate) {
-            const candRef = ref(db, `waiting/${roomKey}/candidates/callee/${Date.now()}`);
-            set(candRef, e.candidate.toJSON());
-          }
-        };
-
-        statusEl.textContent = "Connected ✅ (callee)";
-      } else {
-        // --- Caller ---
-        role = "caller";
-        pc = createPeerConnection();
-
-        const offer = await pc.createOffer();
-        await pc.setLocalDescription(offer);
-
-        roomKey = push(waitingRef).key;
-        await set(ref(db, `waiting/${roomKey}`), { offer: offer.toJSON() });
-
-        // Wait for answer
-        onValue(ref(db, `waiting/${roomKey}/answer`), async snap => {
-          if (snap.exists() && !pc.currentRemoteDescription) {
-            await pc.setRemoteDescription(new RTCSessionDescription(snap.val()));
-            statusEl.textContent = "Connected ✅ (caller)";
-          }
-        });
-
-        // Listen for callee ICE
-        onChildAdded(ref(db, `waiting/${roomKey}/candidates/callee`), async snap => {
-          await pc.addIceCandidate(new RTCIceCandidate(snap.val()));
-        });
-
-        // Send our ICE
-        pc.onicecandidate = e => {
-          if (e.candidate) {
-            const candRef = ref(db, `waiting/${roomKey}/candidates/caller/${Date.now()}`);
-            set(candRef, e.candidate.toJSON());
-          }
-        };
-
-        statusEl.textContent = "Waiting for partner...";
+  // Watch for existing offers
+  const snapshot = await get(waitingRef);
+  let foundKey = null, foundOffer = null;
+  if (snapshot.exists()) {
+    for (const [key, val] of Object.entries(snapshot.val())) {
+      if (val.offer && !val.answer) {
+        foundKey = key;
+        foundOffer = val.offer;
+        break;
       }
     }
+  }
 
+  if (foundKey) {
+    // --- Callee flow ---
+    joinAsCallee(foundKey, foundOffer);
+  } else {
+    // --- Caller flow ---
+    createAsCaller();
+  }
+}
+
+async function joinAsCallee(key, offer) {
+  role = "callee";
+  roomKey = key;
+  statusEl.textContent = "Joining partner...";
+
+  pc = createPeerConnection();
+  await pc.setRemoteDescription(new RTCSessionDescription(offer));
+
+  const answer = await pc.createAnswer();
+  await pc.setLocalDescription(answer);
+  await set(ref(db, `waiting/${roomKey}/answer`), answer.toJSON());
+
+  onChildAdded(ref(db, `waiting/${roomKey}/candidates/caller`), async snap => {
+    await pc.addIceCandidate(new RTCIceCandidate(snap.val()));
+  });
+
+  pc.onicecandidate = e => {
+    if (e.candidate) {
+      const candRef = ref(db, `waiting/${roomKey}/candidates/callee/${Date.now()}`);
+      set(candRef, e.candidate.toJSON());
+    }
+  };
+
+  statusEl.textContent = "Connected ✅ (callee)";
+}
+
+async function createAsCaller() {
+  role = "caller";
+  pc = createPeerConnection();
+
+  const offer = await pc.createOffer();
+  await pc.setLocalDescription(offer);
+
+  roomKey = push(ref(db, "waiting")).key;
+  await set(ref(db, `waiting/${roomKey}`), { offer: offer.toJSON() });
+
+  // Wait for answer in real time
+  onValue(ref(db, `waiting/${roomKey}/answer`), async snap => {
+    if (snap.exists() && !pc.currentRemoteDescription) {
+      await pc.setRemoteDescription(new RTCSessionDescription(snap.val()));
+      statusEl.textContent = "Connected ✅ (caller)";
+    }
+  });
+
+  onChildAdded(ref(db, `waiting/${roomKey}/candidates/callee`), async snap => {
+    await pc.addIceCandidate(new RTCIceCandidate(snap.val()));
+  });
+
+  pc.onicecandidate = e => {
+    if (e.candidate) {
+      const candRef = ref(db, `waiting/${roomKey}/candidates/caller/${Date.now()}`);
+      set(candRef, e.candidate.toJSON());
+    }
+  };
+
+  statusEl.textContent = "Waiting for partner...";
+}
     async function hangUp() {
       if (pc) { pc.close(); pc = null; }
       if (localStream) {
@@ -201,6 +204,11 @@
 
       statusEl.textContent = "Call ended";
     }
+    console.log("Offer created:", offer);
+console.log("Answer received:", snap.val());
+console.log("ICE candidate sent:", e.candidate);
+
   </script>
+  
 </body>
 </html>
