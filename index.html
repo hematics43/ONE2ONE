@@ -5,41 +5,22 @@
   <title>Random Video Chat</title>
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <style>
-    body {
-      margin: 0; font-family: Arial, sans-serif; background: #111; color: #fff;
-      display: flex; flex-direction: column; align-items: center; height: 100vh;
-    }
-    header {
-      padding: 15px; font-size: 22px; font-weight: bold;
-      background: #222; width: 100%; text-align: center;
-    }
-    #videos {
-      flex: 1; display: flex; justify-content: center; align-items: center;
-      gap: 12px; padding: 12px; width: 100%;
-    }
-    video {
-      width: 45%; max-height: 70vh; background: #000; border-radius: 8px;
-      box-shadow: 0 0 10px rgba(0,0,0,0.6);
-    }
-    #controls {
-      background: #222; padding: 12px; width: 100%; text-align: center;
-    }
-    button {
-      background: #444; color: #fff; border: none; border-radius: 6px;
-      padding: 10px 16px; margin: 0 6px; font-size: 16px; cursor: pointer;
-    }
-    button:hover { background: #666; }
-    #status { display: block; margin-top: 8px; font-size: 14px; color: #bbb; }
+    body { margin:0; font-family:sans-serif; background:#111; color:#fff; display:flex; flex-direction:column; align-items:center; height:100vh; }
+    header { padding:15px; font-size:22px; font-weight:bold; background:#222; width:100%; text-align:center; }
+    #videos { flex:1; display:flex; justify-content:center; align-items:center; gap:12px; padding:12px; width:100%; }
+    video { width:45%; max-height:70vh; background:#000; border-radius:8px; box-shadow:0 0 10px rgba(0,0,0,.6); }
+    #controls { background:#222; padding:12px; width:100%; text-align:center; }
+    button { background:#444; color:#fff; border:none; border-radius:6px; padding:10px 16px; margin:0 6px; font-size:16px; cursor:pointer; }
+    button:hover { background:#666; }
+    #status { display:block; margin-top:8px; font-size:14px; color:#bbb; }
   </style>
 </head>
 <body>
   <header>🎥 Random 1-to-1 Video Chat</header>
-
   <div id="videos">
     <video id="localVideo" autoplay playsinline muted></video>
     <video id="remoteVideo" autoplay playsinline></video>
   </div>
-
   <div id="controls">
     <button id="startBtn">Start Camera</button>
     <button id="connectBtn">Find Partner</button>
@@ -49,12 +30,9 @@
 
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.2/firebase-app.js";
-    import {
-      getDatabase, ref, push, set, get, onValue,
-      onChildAdded, remove
-    } from "https://www.gstatic.com/firebasejs/9.22.2/firebase-database.js";
+    import { getDatabase, ref, push, set, get, onChildAdded, onValue, remove } from "https://www.gstatic.com/firebasejs/9.22.2/firebase-database.js";
 
-    // 🔑 Firebase config (your project)
+    // 🔑 Firebase config
     const firebaseConfig = {
       apiKey: "AIzaSyCEwxcXt-jXv29ZIDzji3TgyXnxn1sSsNU",
       authDomain: "one2one-aba34.firebaseapp.com",
@@ -68,7 +46,6 @@
     const app = initializeApp(firebaseConfig);
     const db = getDatabase(app);
 
-    // UI elements
     const startBtn = document.getElementById("startBtn");
     const connectBtn = document.getElementById("connectBtn");
     const hangupBtn = document.getElementById("hangupBtn");
@@ -76,31 +53,18 @@
     const localVideo = document.getElementById("localVideo");
     const remoteVideo = document.getElementById("remoteVideo");
 
-    // State
     let localStream = null;
     let pc = null;
     let roomKey = null;
     let role = null;
+    let searching = false;
 
-    // STUN + TURN servers
     const servers = {
       iceServers: [
         { urls: "stun:stun.l.google.com:19302" },
-        {
-          urls: "turn:openrelay.metered.ca:80",
-          username: "openrelayproject",
-          credential: "openrelayproject"
-        },
-        {
-          urls: "turn:openrelay.metered.ca:443",
-          username: "openrelayproject",
-          credential: "openrelayproject"
-        },
-        {
-          urls: "turn:openrelay.metered.ca:443?transport=tcp",
-          username: "openrelayproject",
-          credential: "openrelayproject"
-        }
+        { urls: "turn:openrelay.metered.ca:80", username: "openrelayproject", credential: "openrelayproject" },
+        { urls: "turn:openrelay.metered.ca:443", username: "openrelayproject", credential: "openrelayproject" },
+        { urls: "turn:openrelay.metered.ca:443?transport=tcp", username: "openrelayproject", credential: "openrelayproject" }
       ]
     };
 
@@ -113,9 +77,7 @@
         localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
         localVideo.srcObject = localStream;
         statusEl.textContent = "Camera ready ✅";
-      } catch (err) {
-        alert("Camera/Mic access blocked: " + err);
-      }
+      } catch (err) { alert("Camera/Mic blocked: " + err); }
     }
 
     function createPeerConnection() {
@@ -127,65 +89,44 @@
 
     async function connectRandomly() {
       if (!localStream) { alert("Start camera first"); return; }
+      if (searching) return;
+      searching = true;
+      statusEl.textContent = "Searching for partner...";
 
       const waitingRef = ref(db, "waiting");
-      const snapshot = await get(waitingRef);
 
+      // Check for an existing waiting offer
+      const snapshot = await get(waitingRef);
       let foundKey = null, foundOffer = null;
       if (snapshot.exists()) {
         for (const [key, val] of Object.entries(snapshot.val())) {
           if (val.offer && !val.answer) {
-            foundKey = key;
-            foundOffer = val.offer;
-            break;
+            foundKey = key; foundOffer = val.offer; break;
           }
         }
       }
 
       if (foundKey) {
-        // --- Callee ---
-        role = "callee";
-        roomKey = foundKey;
-        statusEl.textContent = "Joining partner...";
-
-        pc = createPeerConnection();
-        await pc.setRemoteDescription(new RTCSessionDescription(foundOffer));
-
-        const answer = await pc.createAnswer();
-        await pc.setLocalDescription(answer);
-        await set(ref(db, `waiting/${roomKey}/answer`), answer.toJSON());
-
-        onChildAdded(ref(db, `waiting/${roomKey}/candidates/caller`), async snap => {
-          await pc.addIceCandidate(new RTCIceCandidate(snap.val()));
-        });
-
-        pc.onicecandidate = e => {
-          if (e.candidate) {
-            const candRef = ref(db, `waiting/${roomKey}/candidates/callee/${Date.now()}`);
-            set(candRef, e.candidate.toJSON());
-          }
-        };
-
-        statusEl.textContent = "Connected ✅ (callee)";
+        joinAsCallee(foundKey, foundOffer);
       } else {
-        // --- Caller ---
+        // Become caller and wait for someone
         role = "caller";
         pc = createPeerConnection();
-
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
-
         roomKey = push(waitingRef).key;
         await set(ref(db, `waiting/${roomKey}`), { offer: offer.toJSON() });
 
-        // Wait for answer
+        // Watch for answer
         onValue(ref(db, `waiting/${roomKey}/answer`), async snap => {
           if (snap.exists() && !pc.currentRemoteDescription) {
             await pc.setRemoteDescription(new RTCSessionDescription(snap.val()));
             statusEl.textContent = "Connected ✅ (caller)";
+            searching = false;
           }
         });
 
+        // Listen for callee ICE
         onChildAdded(ref(db, `waiting/${roomKey}/candidates/callee`), async snap => {
           await pc.addIceCandidate(new RTCIceCandidate(snap.val()));
         });
@@ -199,6 +140,41 @@
 
         statusEl.textContent = "Waiting for partner...";
       }
+
+      // Also listen for new offers globally → if we’re still searching and free
+      onChildAdded(waitingRef, async snap => {
+        const val = snap.val();
+        if (searching && !roomKey && val.offer && !val.answer) {
+          joinAsCallee(snap.key, val.offer);
+        }
+      });
+    }
+
+    async function joinAsCallee(key, offer) {
+      role = "callee";
+      roomKey = key;
+      statusEl.textContent = "Joining partner...";
+      pc = createPeerConnection();
+
+      await pc.setRemoteDescription(new RTCSessionDescription(offer));
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      await set(ref(db, `waiting/${roomKey}/answer`), answer.toJSON());
+
+      // Listen for caller ICE
+      onChildAdded(ref(db, `waiting/${roomKey}/candidates/caller`), async snap => {
+        await pc.addIceCandidate(new RTCIceCandidate(snap.val()));
+      });
+
+      pc.onicecandidate = e => {
+        if (e.candidate) {
+          const candRef = ref(db, `waiting/${roomKey}/candidates/callee/${Date.now()}`);
+          set(candRef, e.candidate.toJSON());
+        }
+      };
+
+      statusEl.textContent = "Connected ✅ (callee)";
+      searching = false;
     }
 
     async function hangUp() {
@@ -211,10 +187,11 @@
       remoteVideo.srcObject = null;
 
       if (roomKey) {
-        await remove(ref(db, `waiting/${roomKey}`)); // cleanup
+        await remove(ref(db, `waiting/${roomKey}`));
         roomKey = null;
       }
 
+      searching = false;
       statusEl.textContent = "Call ended";
     }
   </script>
