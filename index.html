@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Random 1-to-1 Video Call</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    body { font-family:sans-serif; margin:20px; }
+    #videos { display:flex; gap:10px; margin-bottom:10px; }
+    video { width:48%; background:#000; border-radius:6px; }
+    button { padding:8px 12px; margin:4px; }
+  </style>
+</head>
+<body>
+  <h1>Random 1-to-1 Video Call</h1>
+
+  <div id="videos">
+    <video id="localVideo" autoplay playsinline muted></video>
+    <video id="remoteVideo" autoplay playsinline></video>
+  </div>
+
+  <div>
+    <button id="startBtn">Start Camera</button>
+    <button id="connectBtn">Connect Randomly</button>
+    <button id="hangupBtn">Hang Up</button>
+  </div>
+
+  <p>Status: <span id="status">Idle</span></p>
+
+  <!-- Firebase + WebRTC -->
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.2/firebase-app.js";
+    import {
+      getDatabase, ref, push, set, get, child, onValue, onChildAdded, remove, update
+    } from "https://www.gstatic.com/firebasejs/9.22.2/firebase-database.js";
+
+    // --- Your Firebase RTDB config ---
+    const firebaseConfig = {
+      apiKey: "AIzaSyCEwxcXt-jXv29ZIDzji3TgyXnxn1sSsNU",
+      authDomain: "one2one-aba34.firebaseapp.com",
+      databaseURL: "https://one2one-aba34-default-rtdb.asia-southeast1.firebasedatabase.app",
+      projectId: "one2one-aba34",
+      storageBucket: "one2one-aba34.firebasestorage.app",
+      messagingSenderId: "535039332839",
+      appId: "1:535039332839:web:87c3875f3a14fd55f9ad42"
+    };
+
+    const app = initializeApp(firebaseConfig);
+    const db = getDatabase(app);
+
+    // --- UI ---
+    const startBtn = document.getElementById("startBtn");
+    const connectBtn = document.getElementById("connectBtn");
+    const hangupBtn = document.getElementById("hangupBtn");
+    const statusEl = document.getElementById("status");
+
+    const localVideo = document.getElementById("localVideo");
+    const remoteVideo = document.getElementById("remoteVideo");
+
+    // --- Variables ---
+    let localStream = null;
+    let pc = null;
+    let roomKey = null;
+    let role = null;
+
+    const servers = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
+
+    startBtn.onclick = startCamera;
+    connectBtn.onclick = connectRandomly;
+    hangupBtn.onclick = hangUp;
+
+    async function startCamera() {
+      localStream = await navigator.mediaDevices.getUserMedia({ video:true, audio:true });
+      localVideo.srcObject = localStream;
+      statusEl.textContent = "Camera ready";
+    }
+
+    function createPeerConnection() {
+      pc = new RTCPeerConnection(servers);
+      if (localStream) {
+        localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+      }
+      pc.ontrack = e => {
+        remoteVideo.srcObject = e.streams[0];
+      };
+      return pc;
+    }
+
+    async function connectRandomly() {
+      if (!localStream) { alert("Start camera first"); return; }
+
+      const waitingRef = ref(db, "waiting");
+      const snapshot = await get(waitingRef);
+
+      if (snapshot.exists()) {
+        // Someone is waiting → join them
+        const [firstKey, firstVal] = Object.entries(snapshot.val())[0];
+        roomKey = firstKey;
+        role = "callee";
+        statusEl.textContent = "Found a partner, joining...";
+
+        pc = createPeerConnection();
+
+        const offer = firstVal.offer;
+        await pc.setRemoteDescription(new RTCSessionDescription(offer));
+
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+
+        // Save answer
+        await set(ref(db, `waiting/${roomKey}/answer`), answer.toJSON());
+
+        // Listen for caller ICE
+        onChildAdded(ref(db, `waiting/${roomKey}/candidates/caller`), async snap => {
+          await pc.addIceCandidate(new RTCIceCandidate(snap.val()));
+        });
+
+        // Send our ICE
+        pc.onicecandidate = e => {
+          if (e.candidate) {
+            const candRef = ref(db, `waiting/${roomKey}/candidates/callee/${Date.now()}`);
+            set(candRef, e.candidate.toJSON());
+          }
+        };
+
+        statusEl.textContent = "Connected as callee";
+      } else {
+        // Nobody waiting → create room
+        pc = createPeerConnection();
+        role = "caller";
+
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+
+        roomKey = push(waitingRef).key;
+        await set(ref(db, `waiting/${roomKey}`), { offer: offer.toJSON() });
+
+        // Listen for answer
+        onValue(ref(db, `waiting/${roomKey}/answer`), async snap => {
+          if (snap.exists() && !pc.currentRemoteDescription) {
+            await pc.setRemoteDescription(new RTCSessionDescription(snap.val()));
+            statusEl.textContent = "Connected as caller";
+          }
+        });
+
+        // Listen for callee ICE
+        onChildAdded(ref(db, `waiting/${roomKey}/candidates/callee`), async snap => {
+          await pc.addIceCandidate(new RTCIceCandidate(snap.val()));
+        });
+
+        // Send our ICE
+        pc.onicecandidate = e => {
+          if (e.candidate) {
+            const candRef = ref(db, `waiting/${roomKey}/candidates/caller/${Date.now()}`);
+            set(candRef, e.candidate.toJSON());
+          }
+        };
+
+        statusEl.textContent = "Waiting for a partner...";
+      }
+    }
+
+    async function hangUp() {
+      if (pc) {
+        pc.close();
+        pc = null;
+      }
+      if (localStream) {
+        localStream.getTracks().forEach(t => t.stop());
+        localStream = null;
+      }
+      localVideo.srcObject = null;
+      remoteVideo.srcObject = null;
+
+      if (roomKey) {
+        await remove(ref(db, `waiting/${roomKey}`));
+      }
+
+      statusEl.textContent = "Call ended";
+      roomKey = null;
+    }
+  </script>
+</body>
+</html>
